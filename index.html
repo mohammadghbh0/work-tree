@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Work Tree</title>
@@ -284,6 +283,17 @@
   }
   let sheetUrl='';
   try{ sheetUrl=localStorage.getItem('wt-sheet-url')||''; }catch(e){}
+  let calOn=false;
+  try{ calOn=localStorage.getItem('wt-cal')==='1'; }catch(e){}
+  let calTimer=null;
+  function scheduleCalSync(){ if(!calOn||!sheetUrl) return; if(calTimer) clearTimeout(calTimer); calTimer=setTimeout(calSyncNow,4000); }
+  function calSyncNow(){
+    if(!sheetUrl) return Promise.resolve();
+    setSave('calendar…');
+    return fetch(sheetUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'calsync'})})
+      .then(r=>r.json()).then(j=>{ setSave(j&&j.ok?'calendar synced':'calendar: update script'); setTimeout(()=>setSave(saveLabel()),2500); return j; })
+      .catch(()=>{ setSave('calendar sync failed'); setTimeout(()=>setSave(saveLabel()),2500); });
+  }
 
   const store={
     mode:'none',
@@ -354,7 +364,7 @@
   }
   function persist(){
     setSave('saving…');
-    return store.set(KEY,serialize()).then(ok=>{ setSave(saveLabel()); });
+    return store.set(KEY,serialize()).then(ok=>{ setSave(saveLabel()); scheduleCalSync(); });
   }
   function saveLabel(){
     return {sheet:'synced via sheet','sheet-offline':'offline · retrying',cloud:'synced',local:'saved on device',none:'not saving'}[store.mode]||'synced';
@@ -746,12 +756,25 @@
         <input type="text" id="stSheetUrl" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(sheetUrl)}" style="width:100%;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-family:var(--f-mono);font-size:12.5px;"/>
       </div>
       <div class="hint" style="margin-bottom:16px">Paste the deployment URL from your Apps Script Web App. Same URL on every device = same synced data. Ask me for the setup script if you haven't made one yet.</div>
+
+      <div class="field" style="border-top:1px solid var(--line);padding-top:16px">
+        <label>Google Calendar sync</label>
+        <div class="status-row" style="margin-bottom:8px">
+          <div class="status-opt ${calOn?'sel rep':''}" data-cal="on">On</div>
+          <div class="status-opt ${!calOn?'sel rep':''}" data-cal="off">Off</div>
+        </div>
+        <button class="btn cal" id="stCalNow" ${sheetUrl?'':'disabled style="opacity:.5"'}>${ICON.cal} Sync tasks now</button>
+        <div class="hint" style="margin-top:8px">Tasks with a due date are pushed to a calendar called "Work Tree". Requires the updated Apps Script (with calendar permission) — ask me for it.</div>
+      </div>
+
       <div class="sheet-foot">
         <button class="btn cal" id="stSheetSave">Save & connect</button>
         <button class="btn del" id="stSheetClear">${sheetUrl?'Disconnect':'Cancel'}</button>
       </div>
     </div></div>`;
     document.getElementById('scrim').onclick=e=>{ if(e.target.id==='scrim'){ settingsOpen=false; renderSheet(); } };
+    document.querySelectorAll('[data-cal]').forEach(el=>el.onclick=()=>{ calOn=el.dataset.cal==='on'; try{ localStorage.setItem('wt-cal',calOn?'1':'0'); }catch(e){} renderSettings(); if(calOn) calSyncNow(); });
+    const cn=document.getElementById('stCalNow'); if(cn&&sheetUrl) cn.onclick=()=>{ calSyncNow().then(j=>{ if(j&&j.ok) alert('Synced: '+(j.created||0)+' added, '+(j.updated||0)+' updated, '+(j.deleted||0)+' removed.'); else alert('Could not sync. Make sure you re-deployed the updated Apps Script and authorized Calendar access.'); }); };
     document.getElementById('stSheetSave').onclick=async()=>{
       const v=document.getElementById('stSheetUrl').value.trim();
       if(!v){ settingsOpen=false; renderSheet(); return; }
