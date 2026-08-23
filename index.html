@@ -18,6 +18,7 @@
     --f-mono:'JetBrains Mono',monospace;
   }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  button svg{ width:16px; height:16px; }
   html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:var(--f-body); font-size:15px; -webkit-font-smoothing:antialiased; }
   @media (prefers-reduced-motion:reduce){ *{ transition:none!important; animation:none!important; } }
 
@@ -114,7 +115,10 @@
   .status-opt.sel[data-s=hold]{ border-color:var(--warn); }
 
   .sheet-foot{ display:flex; gap:10px; margin-top:22px; }
-  .btn{ border:none; border-radius:11px; padding:12px; font-family:var(--f-body); font-size:14px; font-weight:600; cursor:pointer; flex:1; }
+  .btn{ border:none; border-radius:11px; padding:12px; font-family:var(--f-body); font-size:14px; font-weight:600; cursor:pointer; flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+  .btn svg{ width:16px; height:16px; flex-shrink:0; }
+  .add-inline svg{ width:15px; height:15px; flex-shrink:0; }
+  .addbar button svg{ width:16px; height:16px; }
   .btn.cal{ background:var(--panel-2); color:var(--ink); border:1px solid var(--line); }
   .btn.del{ background:none; color:var(--late); border:1px solid #3A2626; flex:0 0 auto; padding:12px 16px; }
   .swatches{ display:flex; gap:9px; }
@@ -154,6 +158,11 @@
   .cv-box:active{ cursor:grabbing; }
   .cv-box.grabbing{ cursor:grabbing; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent), 0 10px 26px rgba(0,0,0,.5); }
   .cv-node:has(.grabbing){ z-index:20; }
+  .cv-node.sel .cv-box{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+  .cv-resize{ position:absolute; right:2px; bottom:2px; width:14px; height:14px; cursor:nwse-resize; border-radius:0 0 10px 0; opacity:0; }
+  .cv-resize::after{ content:''; position:absolute; right:3px; bottom:3px; width:7px; height:7px; border-right:2px solid var(--faint); border-bottom:2px solid var(--faint); }
+  .cv-box:hover .cv-resize, .cv-node.sel .cv-resize{ opacity:1; }
+  .cv-marquee{ position:absolute; border:1.5px solid var(--accent); background:color-mix(in srgb,var(--accent) 14%,transparent); border-radius:6px; pointer-events:none; z-index:15; }
   .cv-box::after{ content:''; position:absolute; left:0; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--c); }
   .cv-box.drop{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent), 0 4px 14px rgba(0,0,0,.4); }
   .cv-node.branch .cv-box{ background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
@@ -176,6 +185,7 @@
 
   .cv-controls{ position:absolute; right:12px; bottom:12px; display:flex; flex-direction:column; gap:6px; z-index:5; }
   .cv-controls button{ width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); font-size:17px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,.3); }
+  .cv-controls button.active{ background:var(--accent); color:#0E1018; border-color:var(--accent); }
   .cv-controls button:hover{ background:var(--panel-2); }
   .cv-hint{ position:absolute; left:12px; bottom:12px; font-family:var(--f-mono); font-size:10px; color:var(--faint); background:color-mix(in srgb,var(--bg) 70%,transparent); padding:5px 9px; border-radius:7px; z-index:5; }
 
@@ -445,9 +455,14 @@
 
   /* ---- Overview: node CANVAS (pan / zoom / drag-to-reparent) ---- */
   const NODE_W=176, BOX_H=50, H_GAP=30, V_GAP=74, PAD=60;
+  const MIN_W=120, MIN_H=44;
   let cam=null;              // {x,y,scale}
   let layout=[];             // [{node, x, y, depth}]
   let addMenuFor=null;
+  let selected=new Set();    // multi-selected node ids (ephemeral)
+  let selectMode=false;      // marquee vs pan
+  function getW(n){ return (typeof n.w==='number')?n.w:NODE_W; }
+  function getH(n){ return (typeof n.h==='number')?n.h:BOX_H; }
 
   function viewOverview(){
     // stats strip
@@ -468,7 +483,7 @@
       const kids=(L.node.type!=='task'&&L.node.expanded&&L.node.children)?L.node.children:[];
       kids.forEach(c=>{
         const cl=layout.find(x=>x.node===c); if(!cl) return;
-        const x1=L.x+NODE_W/2, y1=L.y+BOX_H, x2=cl.x+NODE_W/2, y2=cl.y, my=(y1+y2)/2;
+        const x1=L.x+getW(L.node)/2, y1=L.y+getH(L.node), x2=cl.x+getW(c)/2, y2=cl.y, my=(y1+y2)/2;
         svg+=`<path d="M${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}" fill="none" stroke="${statusColor(L.node)}" stroke-opacity=".45" stroke-width="1.6"/>`;
         svg+=`<circle cx="${x1}" cy="${y1}" r="3" fill="${statusColor(L.node)}"/><circle cx="${x2}" cy="${y2}" r="3" fill="${statusColor(L.node)}"/>`;
       });
@@ -478,16 +493,22 @@
     let nodes='';
     layout.forEach(L=>{ nodes+=canvasNode(L); });
 
+    const selCount=selected.size;
+    const hint = selCount
+      ? `${selCount} selected · drag any to move together · tap empty space to clear`
+      : (selectMode ? 'Select mode: drag a box around nodes · tap the ▣ to exit' : 'Drag a node to move · corner handle to resize · tap ▣ to multi-select');
+
     return `${strip}
       <div class="cv-viewport" id="cvViewport">
         <div class="cv-world" id="cvWorld">${svg}${nodes}</div>
         <div class="cv-controls">
-          <button id="cvZoomIn">+</button>
-          <button id="cvZoomOut">−</button>
+          <button id="cvSelect" class="${selectMode?'active':''}" title="Multi-select">▣</button>
+          <button id="cvZoomIn" title="Zoom in">+</button>
+          <button id="cvZoomOut" title="Zoom out">−</button>
           <button id="cvFit" title="Fit to view">⤢</button>
           <button id="cvArrange" title="Auto-arrange">⟲</button>
         </div>
-        <div class="cv-hint">Drag a node to move it · tap to edit · use "Move to" to change project</div>
+        <div class="cv-hint">${hint}</div>
       </div>
       <button class="add-inline block" id="addWs">${ICON.plus} New workspace</button>`;
   }
@@ -511,10 +532,10 @@
       const x=(typeof n.x==='number')?n.x:ax;
       const y=(typeof n.y==='number')?n.y:ay;
       layout.push({node:n,x,y,depth:n._d});
-      if(n._d>maxDepth) maxDepth=n._d; if(x>maxX) maxX=x; if(y>maxY) maxY=y;
+      if(n._d>maxDepth) maxDepth=n._d; if(x+getW(n)>maxX) maxX=x+getW(n); if(y+getH(n)>maxY) maxY=y+getH(n);
     } });
-    const worldW=Math.max(PAD*2+Math.max(1,leaf)*(NODE_W+H_GAP), maxX+NODE_W+PAD);
-    const worldH=Math.max(PAD*2+(maxDepth+1)*(BOX_H+V_GAP), maxY+BOX_H+PAD+24);
+    const worldW=Math.max(PAD*2+Math.max(1,leaf)*(NODE_W+H_GAP), maxX+PAD);
+    const worldH=Math.max(PAD*2+(maxDepth+1)*(BOX_H+V_GAP), maxY+PAD+24);
     return {worldW,worldH};
   }
 
@@ -534,13 +555,15 @@
     const acts = isTask
       ? `${editBtn}<button class="cv-mini play ${n.timerRunning?'on':''}" data-timer="${n.id}" title="Timer">${n.timerRunning?ICON.pause:ICON.play}</button>`
       : `${editBtn}<button class="cv-mini" data-cvadd="${n.id}" title="Add inside">${ICON.plus}</button>${hasKids?`<button class="cv-mini" data-exp="${n.id}" title="Collapse/expand">${n.expanded?'−':'+'}</button>`:''}`;
-    return `<div class="cv-node ${isTask?'task':'branch'}" data-node="${n.id}" style="left:${L.x}px;top:${L.y}px;width:${NODE_W}px">
-      <div class="cv-box" data-cvopen="${n.id}" style="--c:${col};height:${BOX_H}px">
+    const w=getW(n), h=getH(n), isSel=selected.has(n.id);
+    return `<div class="cv-node ${isTask?'task':'branch'} ${isSel?'sel':''}" data-node="${n.id}" style="left:${L.x}px;top:${L.y}px;width:${w}px">
+      <div class="cv-box" data-cvopen="${n.id}" title="${esc(n.name)}" style="--c:${col};height:${h}px">
         ${icon}
-        <span class="cv-title">${esc(clip(n.name,16))}</span>
+        <span class="cv-title">${esc(clip(n.name,20))}</span>
         <span class="cv-acts">${acts}</span>
+        <span class="cv-resize" data-resize="${n.id}" title="Resize"></span>
       </div>
-      <div class="cv-cap" ${capId}>${esc(cap)}</div>
+      <div class="cv-cap" ${capId} title="${esc(cap)}">${esc(cap)}</div>
     </div>`;
   }
 
@@ -835,53 +858,76 @@
   function wireCanvas(){
     const vp=document.getElementById('cvViewport'), world=document.getElementById('cvWorld');
     if(!vp||!world) return;
-    if(!cam){ // first time: fit
-      fitCam(vp,world);
-    }
+    if(!cam){ fitCam(vp,world); }
     applyCam(world);
 
+    document.getElementById('cvSelect').onclick=()=>{ selectMode=!selectMode; if(!selectMode) selected.clear(); render(); };
     document.getElementById('cvZoomIn').onclick=()=>{ zoomBy(1.2,vp,world); };
     document.getElementById('cvZoomOut').onclick=()=>{ zoomBy(1/1.2,vp,world); };
     document.getElementById('cvFit').onclick=()=>{ cam=null; fitCam(vp,world); applyCam(world); };
-    document.getElementById('cvArrange').onclick=()=>{ if(confirm('Auto-arrange all nodes back into a tidy tree? This clears custom positions.')) autoArrange(); };
+    document.getElementById('cvArrange').onclick=()=>{ if(confirm('Auto-arrange all nodes back into a tidy tree? This clears custom positions and sizes.')) autoArrange(); };
 
-    // node action buttons — stop pointer so a click doesn't start a drag
+    // action buttons — stop pointer so a click doesn't start a drag
     document.querySelectorAll('[data-cvadd]').forEach(el=>el.onpointerdown=e=>e.stopPropagation());
     document.querySelectorAll('[data-cvadd]').forEach(el=>el.onclick=e=>{ e.stopPropagation(); openAddMenu(el.dataset.cvadd,e); });
     document.querySelectorAll('.cv-mini[data-exp],.cv-mini[data-timer],.cv-mini[data-open],.cv-ic[data-done]').forEach(el=>el.onpointerdown=e=>e.stopPropagation());
 
-    // pan on background
+    // background: pan (normal) or marquee-select (select mode)
     vp.onpointerdown=e=>{
       if(e.target.closest('.cv-box')||e.target.closest('.cv-controls')) return;
-      const startX=e.clientX-cam.x, startY=e.clientY-cam.y;
+      if(selectMode){ startMarquee(e,vp,world); return; }
+      // pan
+      const startX=e.clientX-cam.x, startY=e.clientY-cam.y; let moved=false;
       vp.setPointerCapture(e.pointerId);
-      const move=ev=>{ cam.x=ev.clientX-startX; cam.y=ev.clientY-startY; applyCam(world); };
-      const up=()=>{ vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up); };
+      const move=ev=>{ moved=true; cam.x=ev.clientX-startX; cam.y=ev.clientY-startY; applyCam(world); };
+      const up=()=>{ vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up); if(!moved && selected.size){ selected.clear(); render(); } };
       vp.addEventListener('pointermove',move); vp.addEventListener('pointerup',up);
     };
-    // wheel zoom
     vp.onwheel=e=>{ e.preventDefault(); zoomBy(e.deltaY<0?1.1:1/1.1,vp,world,e); };
 
-    // node drag (reposition) / tap (open)
+    // resize handles
+    document.querySelectorAll('[data-resize]').forEach(h=>{
+      h.onpointerdown=e=>{
+        e.stopPropagation();
+        const id=h.dataset.resize, n=find(id).node;
+        const nodeEl=h.closest('.cv-node'), boxEl=h.closest('.cv-box');
+        const sx=e.clientX, sy=e.clientY, sw=getW(n), sh=getH(n);
+        h.setPointerCapture(e.pointerId);
+        const move=ev=>{
+          const dw=(ev.clientX-sx)/cam.scale, dh=(ev.clientY-sy)/cam.scale;
+          n.w=Math.max(MIN_W,Math.round(sw+dw)); n.h=Math.max(MIN_H,Math.round(sh+dh));
+          nodeEl.style.width=n.w+'px'; boxEl.style.height=n.h+'px';
+          const L=layout.find(x=>x.node.id===id); if(L){ /* size read via getW/getH */ }
+          redrawLinks();
+        };
+        const up=()=>{ h.removeEventListener('pointermove',move); h.removeEventListener('pointerup',up); persist(); };
+        h.addEventListener('pointermove',move); h.addEventListener('pointerup',up);
+      };
+    });
+
+    // node body: drag (single or group) / tap (open or select-toggle)
     document.querySelectorAll('[data-cvopen]').forEach(box=>{
       box.onpointerdown=e=>{
         e.stopPropagation();
         const id=box.dataset.cvopen;
         const L=layout.find(x=>x.node.id===id); if(!L) return;
-        const nodeEl=box.closest('.cv-node');
+        // which nodes move together
+        const groupIds=(selected.has(id)&&selected.size>1)?[...selected]:[id];
+        const snaps={}; groupIds.forEach(gid=>{ const gl=layout.find(x=>x.node.id===gid); if(gl) snaps[gid]={x:gl.x,y:gl.y}; });
         const p0=worldPoint(e,vp);
-        const grabDX=p0.x-L.x, grabDY=p0.y-L.y;
         const sx=e.clientX, sy=e.clientY; let dragging=false;
         box.setPointerCapture(e.pointerId);
         const move=ev=>{
-          const dx=ev.clientX-sx, dy=ev.clientY-sy;
-          if(!dragging && Math.hypot(dx,dy)>5){ dragging=true; box.classList.add('grabbing'); }
+          const dxs=ev.clientX-sx, dys=ev.clientY-sy;
+          if(!dragging && Math.hypot(dxs,dys)>5){ dragging=true; box.classList.add('grabbing'); }
           if(dragging){
-            const p=worldPoint(ev,vp);
-            let nx=p.x-grabDX, ny=p.y-grabDY;
-            // live move: update element + stored position + redraw its links
-            nodeEl.style.left=nx+'px'; nodeEl.style.top=ny+'px';
-            L.x=nx; L.y=ny;
+            const p=worldPoint(ev,vp); const dx=p.x-p0.x, dy=p.y-p0.y;
+            groupIds.forEach(gid=>{
+              const gl=layout.find(x=>x.node.id===gid); if(!gl||!snaps[gid]) return;
+              gl.x=snaps[gid].x+dx; gl.y=snaps[gid].y+dy;
+              const el=document.querySelector('.cv-node[data-node="'+gid+'"]');
+              if(el){ el.style.left=gl.x+'px'; el.style.top=gl.y+'px'; }
+            });
             redrawLinks();
           }
         };
@@ -889,17 +935,40 @@
           box.removeEventListener('pointermove',move); box.removeEventListener('pointerup',up);
           box.classList.remove('grabbing');
           if(dragging){
-            const nn=find(id).node;
-            nn.x=Math.round(L.x); nn.y=Math.round(L.y);
+            groupIds.forEach(gid=>{ const gl=layout.find(x=>x.node.id===gid); const nn=find(gid); if(gl&&nn){ nn.node.x=Math.round(gl.x); nn.node.y=Math.round(gl.y); } });
             persist();
           } else {
-            openSheet(id);
+            // tap
+            if(selectMode || ev.shiftKey){ if(selected.has(id)) selected.delete(id); else selected.add(id); render(); }
+            else openSheet(id);
           }
         };
         box.addEventListener('pointermove',move); box.addEventListener('pointerup',up);
       };
     });
   }
+
+  function startMarquee(e,vp,world){
+    const p0=worldPoint(e,vp);
+    const box=document.createElement('div'); box.className='cv-marquee'; world.appendChild(box);
+    vp.setPointerCapture(e.pointerId);
+    const move=ev=>{
+      const p=worldPoint(ev,vp);
+      const x=Math.min(p0.x,p.x), y=Math.min(p0.y,p.y), w=Math.abs(p.x-p0.x), hh=Math.abs(p.y-p0.y);
+      box.style.left=x+'px'; box.style.top=y+'px'; box.style.width=w+'px'; box.style.height=hh+'px';
+    };
+    const up=ev=>{
+      vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up);
+      const p=worldPoint(ev,vp);
+      const rx1=Math.min(p0.x,p.x), ry1=Math.min(p0.y,p.y), rx2=Math.max(p0.x,p.x), ry2=Math.max(p0.y,p.y);
+      selected.clear();
+      layout.forEach(L=>{ const nx1=L.x,ny1=L.y,nx2=L.x+getW(L.node),ny2=L.y+getH(L.node);
+        if(nx1<rx2&&nx2>rx1&&ny1<ry2&&ny2>ry1) selected.add(L.node.id); });
+      box.remove(); render();
+    };
+    vp.addEventListener('pointermove',move); vp.addEventListener('pointerup',up);
+  }
+
   // redraw connector paths in place during a drag (no full re-render)
   function redrawLinks(){
     const svg=document.querySelector('.cv-links'); if(!svg) return;
@@ -908,7 +977,7 @@
       const kids=(L.node.type!=='task'&&L.node.expanded&&L.node.children)?L.node.children:[];
       kids.forEach(c=>{
         const cl=layout.find(x=>x.node===c); if(!cl) return;
-        const x1=L.x+NODE_W/2, y1=L.y+BOX_H, x2=cl.x+NODE_W/2, y2=cl.y, my=(y1+y2)/2;
+        const x1=L.x+getW(L.node)/2, y1=L.y+getH(L.node), x2=cl.x+getW(c)/2, y2=cl.y, my=(y1+y2)/2;
         const col=statusColor(L.node);
         s+=`<path d="M${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}" fill="none" stroke="${col}" stroke-opacity=".45" stroke-width="1.6"/>`;
         s+=`<circle cx="${x1}" cy="${y1}" r="3" fill="${col}"/><circle cx="${x2}" cy="${y2}" r="3" fill="${col}"/>`;
@@ -932,7 +1001,7 @@
     applyCam(world);
   }
   function worldPoint(e,vp){ const r=vp.getBoundingClientRect(); return {x:(e.clientX-r.left-cam.x)/cam.scale,y:(e.clientY-r.top-cam.y)/cam.scale}; }
-  function autoArrange(){ walk(n=>{ delete n.x; delete n.y; }); persist(); render(); }
+  function autoArrange(){ walk(n=>{ delete n.x; delete n.y; delete n.w; delete n.h; }); selected.clear(); persist(); render(); }
   function openAddMenu(parentId,e){
     closeAddMenu();
     const m=document.createElement('div'); m.className='cv-addmenu'; m.id='cvAddMenu';
