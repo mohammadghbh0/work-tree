@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Work Tree</title>
@@ -335,12 +334,24 @@
 
   .map-node{ position:absolute; transform:translate(-50%,-50%); display:flex; align-items:center; }
   .map-node-body{ background:var(--panel); border:1.5px solid var(--mc); color:var(--ink); border-radius:20px; padding:9px 15px; font-size:13.5px; font-weight:500; max-width:200px; box-shadow:0 3px 12px rgba(0,0,0,.3); cursor:grab; white-space:normal; text-align:center; line-height:1.3; }
+  .map-node-body.sized{ width:var(--mw); max-width:none; }
   .map-node.root .map-node-body{ background:linear-gradient(180deg,color-mix(in srgb,var(--mc) 26%,var(--panel)),var(--panel)); border-width:2px; font-family:var(--f-disp); font-weight:600; font-size:15px; padding:11px 18px; }
   .map-node.grabbing .map-node-body{ cursor:grabbing; box-shadow:0 0 0 2px var(--mc),0 8px 22px rgba(0,0,0,.5); }
+  .map-node.sel .map-node-body{ box-shadow:0 0 0 2px var(--accent),0 4px 14px rgba(0,0,0,.4); border-color:var(--accent); }
   .map-add{ width:22px; height:22px; border-radius:50%; border:none; background:var(--mc); color:#0E1018; cursor:pointer; display:flex; align-items:center; justify-content:center; margin-left:-8px; opacity:0; transition:opacity .12s; flex-shrink:0; box-shadow:0 2px 6px rgba(0,0,0,.4); }
   .map-node:hover .map-add, .map-node.root .map-add{ opacity:1; }
   .map-add svg{ width:13px; height:13px; }
   @media(hover:none){ .map-add{ opacity:1; } }
+  .map-resize{ position:absolute; right:-5px; bottom:-5px; width:16px; height:16px; border-radius:50%; background:var(--panel-2); border:1.5px solid var(--mc); cursor:nwse-resize; opacity:0; transition:opacity .12s; }
+  .map-resize::after{ content:''; position:absolute; inset:4px; border-right:2px solid var(--mc); border-bottom:2px solid var(--mc); }
+  .map-node:hover .map-resize{ opacity:1; }
+  @media(hover:none){ .map-resize{ opacity:.85; } }
+  .map-note{ position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:10px; max-width:170px; font-size:11px; line-height:1.35; color:var(--dim); background:color-mix(in srgb,var(--warn) 8%,var(--panel)); border:1px dashed color-mix(in srgb,var(--warn) 40%,var(--line)); border-radius:8px; padding:5px 8px; pointer-events:none; white-space:normal; text-align:left; }
+  .map-selbar{ position:absolute; left:50%; bottom:52px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:7px 8px 7px 13px; box-shadow:0 6px 20px rgba(0,0,0,.4); z-index:6; }
+  .map-selbar span{ font-size:12.5px; color:var(--dim); font-family:var(--f-mono); }
+  .map-selbar button{ background:var(--accent); color:#0E1018; border:none; border-radius:8px; padding:7px 11px; font-size:12.5px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:5px; }
+  .map-selbar button#mapSelClear{ background:var(--panel-2); color:var(--dim); }
+  .map-selbar button svg{ width:13px; height:13px; }
   .map-empty-add{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:var(--accent); color:#0E1018; border:none; border-radius:11px; padding:12px 18px; font-weight:600; font-size:14px; cursor:pointer; display:flex; align-items:center; gap:7px; z-index:4; }
   .map-empty-add svg{ width:16px; height:16px; }
 </style>
@@ -1110,6 +1121,8 @@
   /* ============ MIND MAPS ============ */
   const MAP_ORIGIN=2600, MAP_WORLD=5200;
   let mcam=null;
+  let mapSel=new Set();
+  let mapSelectMode=false;
   const MAP_COLORS=['#6E8BEF','#4FBF8B','#E7B84E','#C98BE0','#EF6461','#5BC5D4','#E08A5B'];
   function mapById(id){ return (state.maps||[]).find(m=>m.id===id); }
   function currentMap(){ return mapId?mapById(mapId):null; }
@@ -1136,6 +1149,31 @@
     while(grew){ grew=false; map.nodes.forEach(n=>{ if(n.parent&&kill.has(n.parent)&&!kill.has(n.id)){ kill.add(n.id); grew=true; } }); }
     map.nodes=map.nodes.filter(n=>!kill.has(n.id));
     mapNodeId=null; persist(); render();
+  }
+  function insertParentOf(id){
+    const map=currentMap(); if(!map) return null;
+    const n=mapNode(map,id); if(!n) return null;
+    const node={id:uid(),text:'New idea',x:n.x-40,y:n.y-70,parent:n.parent,color:n.color||null};
+    n.parent=node.id;
+    map.nodes.push(node); map.ts=new Date().toISOString(); persist(); render(); return node;
+  }
+  function makeParentOfSelected(){
+    const map=currentMap(); if(!map||mapSel.size<1) return;
+    const ids=[...mapSel].filter(id=>mapNode(map,id));
+    if(!ids.length) return;
+    // centroid for placement, just above the group
+    let sx=0,sy=0; ids.forEach(id=>{ const n=mapNode(map,id); sx+=n.x; sy+=n.y; });
+    const cx=sx/ids.length, cy=sy/ids.length;
+    // common parent if they all share one, else new node becomes a root
+    const parents=new Set(ids.map(id=>mapNode(map,id).parent));
+    const commonParent = parents.size===1 ? [...parents][0] : null;
+    // don't let the new node's parent be one of the selected (would orphan); if so, root it
+    const parent = (commonParent && !ids.includes(commonParent)) ? commonParent : null;
+    const node={id:uid(),text:'New idea',x:cx,y:cy-110,parent:parent,color:map.color||null};
+    map.nodes.push(node);
+    ids.forEach(id=>{ mapNode(map,id).parent=node.id; });
+    map.ts=new Date().toISOString(); mapSel.clear(); persist(); render();
+    openMapNode(node.id);
   }
   function openMap(id){ mapId=id; mcam=null; sheetId=null; searchOpen=false; settingsOpen=false; render(); }
   function openMapNode(id){ mapNodeId=id; renderSheet(); }
@@ -1164,9 +1202,13 @@
   }
   function mapNodeHTML(n,map){
     const isRoot=!n.parent, col=n.color||map.color||'#6E8BEF';
-    return `<div class="map-node ${isRoot?'root':''}" data-mnode="${n.id}" style="left:${n.x+MAP_ORIGIN}px;top:${n.y+MAP_ORIGIN}px;--mc:${col}">
-      <span class="map-node-body" data-mopen="${n.id}">${esc(n.text||'…')}</span>
+    const sized=n.w?`--mw:${n.w}px`:'';
+    const sel=mapSel.has(n.id)?'sel':'';
+    return `<div class="map-node ${isRoot?'root':''} ${sel}" data-mnode="${n.id}" style="left:${n.x+MAP_ORIGIN}px;top:${n.y+MAP_ORIGIN}px;--mc:${col}">
+      <span class="map-node-body ${n.w?'sized':''}" data-mopen="${n.id}" style="${sized}">${esc(n.text||'…')}</span>
       <button class="map-add" data-madd="${n.id}" title="Add branch">${ICON.plus}</button>
+      <span class="map-resize" data-mresize="${n.id}" title="Resize"></span>
+      ${n.note?`<span class="map-note">${esc(n.note)}</span>`:''}
     </div>`;
   }
   function viewMapEditor(){
@@ -1175,6 +1217,14 @@
     map.nodes.forEach(n=>{ if(n.parent){ const p=mapNode(map,n.parent); if(p) edges+=mapCurve(p,n); } });
     const nodes=map.nodes.map(n=>mapNodeHTML(n,map)).join('');
     const emptyOverlay = map.nodes.length? '' : `<button class="map-empty-add" id="mapFirst">${ICON.plus} Add first node</button>`;
+    const selBar = mapSel.size ? `<div class="map-selbar">
+        <span>${mapSel.size} selected</span>
+        <button id="mapGroup">${ICON.plus} Parent of these</button>
+        <button id="mapSelClear">Clear</button>
+      </div>` : '';
+    const hint = mapSelectMode
+      ? 'Select mode: drag a box around nodes · drag a selected node to move the group'
+      : 'Tap a node to edit · drag to move · + branch · ⌟ resize · pinch to zoom';
     return `<div class="map-top">
         <button class="tbtn" id="mapBack">${ICON.back} All maps</button>
         <input class="map-name" id="mapName" value="${esc(map.name)}"/>
@@ -1187,11 +1237,13 @@
         </div>
         ${emptyOverlay}
         <div class="cv-controls">
+          <button id="mapSelect" class="${mapSelectMode?'active':''}" title="Multi-select">▣</button>
           <button id="mapZoomIn" title="Zoom in">+</button>
           <button id="mapZoomOut" title="Zoom out">−</button>
           <button id="mapFit" title="Fit">⤢</button>
         </div>
-        <div class="cv-hint">Tap a node to edit · drag to move · + adds a branch · pinch to zoom</div>
+        ${selBar}
+        <div class="cv-hint">${hint}</div>
       </div>`;
   }
 
@@ -1240,25 +1292,43 @@
     if(!vp||!world) return;
     if(!mcam) fitMap(vp,world);
     applyMapCam(world);
-    const bk=document.getElementById('mapBack'); if(bk) bk.onclick=()=>{ mapId=null; render(); };
+    const bk=document.getElementById('mapBack'); if(bk) bk.onclick=()=>{ mapId=null; mapSel.clear(); mapSelectMode=false; render(); };
     const nm=document.getElementById('mapName'); if(nm) nm.onchange=()=>{ const map=currentMap(); if(map&&nm.value.trim()){ map.name=nm.value.trim(); persist(); } };
     const ar=document.getElementById('mapAddRoot'); if(ar) ar.onclick=()=>{ const n=addMapNode(null); if(n) openMapNode(n.id); };
     const mf=document.getElementById('mapFirst'); if(mf) mf.onclick=()=>{ const n=addMapNode(null); if(n) openMapNode(n.id); };
     const zi=document.getElementById('mapZoomIn'); if(zi) zi.onclick=()=>mapZoom(1.2,vp,world);
     const zo=document.getElementById('mapZoomOut'); if(zo) zo.onclick=()=>mapZoom(1/1.2,vp,world);
     const ft=document.getElementById('mapFit'); if(ft) ft.onclick=()=>{ fitMap(vp,world); applyMapCam(world); };
+    const sel=document.getElementById('mapSelect'); if(sel) sel.onclick=()=>{ mapSelectMode=!mapSelectMode; if(!mapSelectMode) mapSel.clear(); render(); };
+    const gp=document.getElementById('mapGroup'); if(gp) gp.onclick=makeParentOfSelected;
+    const sc=document.getElementById('mapSelClear'); if(sc) sc.onclick=()=>{ mapSel.clear(); render(); };
 
-    // add-branch + open buttons shouldn't start a drag
+    // add-branch buttons shouldn't start a drag
     document.querySelectorAll('[data-madd]').forEach(el=>{ el.onpointerdown=e=>e.stopPropagation(); el.onclick=e=>{ e.stopPropagation(); const n=addMapNode(el.dataset.madd); if(n) openMapNode(n.id); }; });
 
-    // background pan
+    // resize handles
+    document.querySelectorAll('[data-mresize]').forEach(h=>{
+      h.onpointerdown=e=>{
+        e.stopPropagation();
+        const map=currentMap(), n=mapNode(map,h.dataset.mresize); if(!n) return;
+        const bodyEl=h.closest('.map-node').querySelector('.map-node-body');
+        const sx=e.clientX, startW=n.w||bodyEl.offsetWidth||160;
+        h.setPointerCapture(e.pointerId);
+        const move=ev=>{ const dx=(ev.clientX-sx)/mcam.scale; n.w=Math.max(90,Math.min(360,Math.round(startW+dx*2))); bodyEl.classList.add('sized'); bodyEl.style.setProperty('--mw',n.w+'px'); redrawMapLinks(); };
+        const up=()=>{ h.removeEventListener('pointermove',move); h.removeEventListener('pointerup',up); persist(); };
+        h.addEventListener('pointermove',move); h.addEventListener('pointerup',up);
+      };
+    });
+
+    // background: pan, or marquee-select in select mode
     vp.onpointerdown=e=>{
       if(pinching) return;
-      if(e.target.closest('.map-node')||e.target.closest('.cv-controls')) return;
-      const sx=e.clientX-mcam.x, sy=e.clientY-mcam.y;
+      if(e.target.closest('.map-node')||e.target.closest('.cv-controls')||e.target.closest('.map-selbar')) return;
+      if(mapSelectMode){ startMapMarquee(e,vp,world); return; }
+      const sx=e.clientX-mcam.x, sy=e.clientY-mcam.y; let moved=false;
       vp.setPointerCapture(e.pointerId);
-      const move=ev=>{ if(pinching) return; mcam.x=ev.clientX-sx; mcam.y=ev.clientY-sy; applyMapCam(world); };
-      const up=()=>{ vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up); };
+      const move=ev=>{ if(pinching) return; moved=true; mcam.x=ev.clientX-sx; mcam.y=ev.clientY-sy; applyMapCam(world); };
+      const up=()=>{ vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up); if(!moved&&mapSel.size){ mapSel.clear(); render(); } };
       vp.addEventListener('pointermove',move); vp.addEventListener('pointerup',up);
     };
     vp.onwheel=e=>{ e.preventDefault(); mapZoom(e.deltaY<0?1.1:1/1.1,vp,world,e); };
@@ -1270,7 +1340,7 @@
     const endPinch=e=>{ if(e.touches.length<2){ pinch=null; setTimeout(()=>{ pinching=false; },60); } };
     vp.addEventListener('touchend',endPinch); vp.addEventListener('touchcancel',endPinch);
 
-    // node drag / tap-to-edit
+    // node drag (single or group) / tap-to-edit / toggle-in-select-mode
     document.querySelectorAll('[data-mopen]').forEach(body=>{
       body.onpointerdown=e=>{
         if(pinching) return;
@@ -1278,23 +1348,48 @@
         const id=body.dataset.mopen, map=currentMap(), n=mapNode(map,id); if(!n) return;
         const nodeEl=body.closest('.map-node');
         const touch=e.pointerType==='touch', threshold=touch?12:5;
-        const sx=e.clientX, sy=e.clientY, ox=n.x, oy=n.y; let dragging=false, suppressed=false;
+        const groupIds=(mapSel.has(id)&&mapSel.size>1)?[...mapSel]:[id];
+        const snaps={}; groupIds.forEach(gid=>{ const g=mapNode(map,gid); if(g) snaps[gid]={x:g.x,y:g.y}; });
+        const sx=e.clientX, sy=e.clientY; let dragging=false, suppressed=false;
         body.setPointerCapture(e.pointerId);
         const move=ev=>{
           if(pinching){ suppressed=true; return; }
           const dxs=ev.clientX-sx, dys=ev.clientY-sy;
           if(!dragging&&Math.hypot(dxs,dys)>threshold){ dragging=true; nodeEl.classList.add('grabbing'); }
-          if(dragging){ n.x=ox+dxs/mcam.scale; n.y=oy+dys/mcam.scale; nodeEl.style.left=(n.x+MAP_ORIGIN)+'px'; nodeEl.style.top=(n.y+MAP_ORIGIN)+'px'; redrawMapLinks(); }
+          if(dragging){
+            const dx=dxs/mcam.scale, dy=dys/mcam.scale;
+            groupIds.forEach(gid=>{ const g=mapNode(map,gid); if(!g||!snaps[gid]) return; g.x=snaps[gid].x+dx; g.y=snaps[gid].y+dy;
+              const el=document.querySelector('.map-node[data-mnode="'+gid+'"]'); if(el){ el.style.left=(g.x+MAP_ORIGIN)+'px'; el.style.top=(g.y+MAP_ORIGIN)+'px'; } });
+            redrawMapLinks();
+          }
         };
         const up=()=>{
           body.removeEventListener('pointermove',move); body.removeEventListener('pointerup',up);
           nodeEl.classList.remove('grabbing');
-          if(dragging){ n.x=Math.round(n.x); n.y=Math.round(n.y); persist(); }
-          else if(!suppressed&&!pinching){ openMapNode(id); }
+          if(dragging){ groupIds.forEach(gid=>{ const g=mapNode(map,gid); if(g){ g.x=Math.round(g.x); g.y=Math.round(g.y); } }); persist(); }
+          else if(!suppressed&&!pinching){
+            if(mapSelectMode){ if(mapSel.has(id)) mapSel.delete(id); else mapSel.add(id); render(); }
+            else openMapNode(id);
+          }
         };
         body.addEventListener('pointermove',move); body.addEventListener('pointerup',up);
       };
     });
+  }
+  function startMapMarquee(e,vp,world){
+    const p0=mapWorldPoint(e,vp);
+    const box=document.createElement('div'); box.className='cv-marquee'; world.appendChild(box);
+    vp.setPointerCapture(e.pointerId);
+    const move=ev=>{ const p=mapWorldPoint(ev,vp); box.style.left=Math.min(p0.x,p.x)+'px'; box.style.top=Math.min(p0.y,p.y)+'px'; box.style.width=Math.abs(p.x-p0.x)+'px'; box.style.height=Math.abs(p.y-p0.y)+'px'; };
+    const up=ev=>{
+      vp.removeEventListener('pointermove',move); vp.removeEventListener('pointerup',up);
+      const p=mapWorldPoint(ev,vp), map=currentMap();
+      const rx1=Math.min(p0.x,p.x), ry1=Math.min(p0.y,p.y), rx2=Math.max(p0.x,p.x), ry2=Math.max(p0.y,p.y);
+      mapSel.clear();
+      if(map) map.nodes.forEach(n=>{ const cx=n.x+MAP_ORIGIN, cy=n.y+MAP_ORIGIN; if(cx>=rx1&&cx<=rx2&&cy>=ry1&&cy<=ry2) mapSel.add(n.id); });
+      box.remove(); render();
+    };
+    vp.addEventListener('pointermove',move); vp.addEventListener('pointerup',up);
   }
   function redrawMapLinks(){
     const map=currentMap(); const svg=document.getElementById('mapLinks'); if(!svg||!map) return;
@@ -1312,16 +1407,20 @@
         <input class="sheet-title" id="mnText" value="${esc(n.text)}" placeholder="Node text"/></div>
       <div class="kind-tag">${n.parent?'BRANCH':'CENTRAL NODE'}</div>
       <div class="field"><label>Colour</label><div class="swatches">${MAP_COLORS.map(c=>`<span class="sw ${n.color===c?'sel':''}" style="background:${c}" data-mcolor="${c}"></span>`).join('')}</div></div>
+      <div class="field"><label>Note beside node</label><textarea id="mnNote" class="sheet-notes" placeholder="A short reminder shown next to this node…">${esc(n.note||'')}</textarea></div>
       <div class="sheet-foot">
         <button class="btn cal" id="mnAdd">${ICON.plus} Add branch</button>
+        <button class="btn cal" id="mnInsert">${ICON.target} Insert parent</button>
         <button class="btn del" id="mnDel">Delete</button>
       </div>
     </div></div>`;
     const close=()=>{ mapNodeId=null; renderSheet(); render(); };
     document.getElementById('scrim').onclick=e=>{ if(e.target.id==='scrim') close(); };
     const ti=document.getElementById('mnText'); ti.onchange=()=>{ n.text=ti.value; map.ts=new Date().toISOString(); persist(); render(); };
+    const noteEl=document.getElementById('mnNote'); if(noteEl) noteEl.onchange=()=>{ n.note=noteEl.value.trim(); map.ts=new Date().toISOString(); persist(); render(); };
     document.querySelectorAll('[data-mcolor]').forEach(el=>el.onclick=()=>{ n.color=el.dataset.mcolor; persist(); renderMapNodeSheet(); render(); });
     document.getElementById('mnAdd').onclick=()=>{ const c=addMapNode(n.id); if(c){ mapNodeId=c.id; renderMapNodeSheet(); render(); } };
+    document.getElementById('mnInsert').onclick=()=>{ const p=insertParentOf(n.id); if(p){ mapNodeId=p.id; renderMapNodeSheet(); render(); } };
     document.getElementById('mnDel').onclick=()=>{ if(confirm('Delete this node'+ (map.nodes.some(x=>x.parent===n.id)?' and its branches':'') +'?')) removeMapNode(n.id); };
   }
 
@@ -1563,7 +1662,7 @@
 
   /* ============ WIRING ============ */
   function wire(){
-    document.getElementById('tabs').querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ tab=t.dataset.tab; addingUnder=null; if(tab!=='maps'){ mapId=null; mapNodeId=null; } render(); });
+    document.getElementById('tabs').querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ tab=t.dataset.tab; addingUnder=null; if(tab!=='maps'){ mapId=null; mapNodeId=null; mapSel.clear(); mapSelectMode=false; } render(); });
     const aw=document.getElementById('addWs'); if(aw) aw.onclick=()=>{ const name=prompt('Workspace name'); if(name) addChild(null,name,'workspace'); };
     const sb=document.getElementById('settingsBtn'); if(sb) sb.onclick=()=>{ sheetId=null; ideaId=null; searchOpen=false; mapNodeId=null; settingsOpen=true; renderSheet(); };
     const seb=document.getElementById('searchBtn'); if(seb) seb.onclick=()=>{ settingsOpen=false; sheetId=null; ideaId=null; mapNodeId=null; searchOpen=true; renderSheet(); };
